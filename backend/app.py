@@ -78,8 +78,11 @@ async def process_pdf(file: UploadFile = File(...)):
         temp_dir.mkdir(exist_ok=True)
         temp_file_path = temp_dir / file.filename
         
+        # Optimalizace: Použití streamu s pevnou velikostí chunků (1MB)
+        # To zabrání načtení celého souboru do RAM při ukládání
         with open(temp_file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            while content := await file.read(1024 * 1024):  # 1MB chunks
+                buffer.write(content)
             
         logger.info(f"File saved to {temp_file_path}")
 
@@ -87,9 +90,15 @@ async def process_pdf(file: UploadFile = File(...)):
         # Použijeme existující output adresář z configu
         result = processor.process_pdf(temp_file_path, OUTPUT_DIR)
         
-        # Úklid dočasného souboru
-        # (Volitelné: možná budete chtít soubor zachovat pro debugování)
-        # os.remove(temp_file_path)
+        # Explicitní úklid paměti po zpracování
+        import gc
+        gc.collect()
+        
+        # Úklid dočasného souboru (šetří místo na disku)
+        try:
+            os.remove(temp_file_path)
+        except Exception as e:
+            logger.warning(f"Could not remove temp file: {e}")
         
         # Obohacení výsledku o cesty ke stažení (relativní URL)
         output_folder_name = temp_file_path.stem

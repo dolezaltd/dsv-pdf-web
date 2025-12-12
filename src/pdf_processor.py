@@ -343,17 +343,27 @@ class PDFProcessor:
             page_numbers: Seznam čísel stránek k extrakci
             output_path: Cesta k výstupnímu PDF souboru
         """
+        import gc
         from PyPDF2 import PdfReader, PdfWriter
         
-        reader = PdfReader(str(pdf_path))
-        writer = PdfWriter()
+        # Optimalizace: Čteme pouze potřebné stránky, minimalizujeme paměť
+        # Použití streamu místo načtení celého souboru
+        with open(pdf_path, 'rb') as f:
+            reader = PdfReader(f)
+            writer = PdfWriter()
+            
+            for page_num in page_numbers:
+                # Stránky jsou 1-based, indexy 0-based
+                if 1 <= page_num <= len(reader.pages):
+                    writer.add_page(reader.pages[page_num - 1])
+            
+            with open(output_path, 'wb') as output_file:
+                writer.write(output_file)
         
-        for page_num in page_numbers:
-            if 1 <= page_num <= len(reader.pages):
-                writer.add_page(reader.pages[page_num - 1])
-        
-        with open(output_path, 'wb') as output_file:
-            writer.write(output_file)
+        # Explicitní úklid paměti po náročné operaci
+        del reader
+        del writer
+        gc.collect()
     
     def convert_to_csv(self, data: List[Dict[str, Any]], output_path: Path):
         """
@@ -416,6 +426,12 @@ class PDFProcessor:
         
         # Krok 3: Identifikace typů stránek (CN a MRN)
         print("  → Identifikuji MRN stránky...")
+        
+        # Optimalizace: Uvolnění paměti po náročné operaci Gemini
+        # Gemini data už máme v extracted_data
+        import gc
+        gc.collect()
+
         page_types = self.extract_pages_by_type(pdf_path, ["Consignment Note", "MRN"])
         found_cn_pages = page_types.get("Consignment Note", [])
         found_mrn_pages = page_types.get("MRN", [])
