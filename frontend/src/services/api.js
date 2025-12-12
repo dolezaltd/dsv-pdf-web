@@ -73,7 +73,11 @@ export const downloadFile = (fileType, jobId, filename) => {
 export const healthCheck = async () => {
   try {
     const response = await api.get('/');
-    return response.data;
+    // Pokud backend vrátí validní odpověď (i když jen message), považujeme to za OK
+    return { 
+      status: 'ok', 
+      message: response.data.message || 'Backend běží' 
+    };
   } catch (error) {
     throw new Error('Backend není dostupný');
   }
