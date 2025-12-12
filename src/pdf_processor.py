@@ -6,7 +6,6 @@ import base64
 import time
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
-import pdfplumber
 import google.generativeai as genai
 from .config import GOOGLE_API_KEY, AI_MODEL
 from .extract_prompt import EXTRACTION_PROMPT
@@ -127,6 +126,7 @@ class PDFProcessor:
     def extract_text_from_pdf(self, pdf_path: Path) -> str:
         """
         Extrahuje text z PDF souboru.
+        Používá PyPDF2 místo pdfplumber pro úsporu paměti.
         
         Args:
             pdf_path: Cesta k PDF souboru
@@ -134,13 +134,29 @@ class PDFProcessor:
         Returns:
             Text z PDF jako string
         """
+        import gc
+        from PyPDF2 import PdfReader
+        
         text_parts = []
         
-        with pdfplumber.open(pdf_path) as pdf:
-            for page_num, page in enumerate(pdf.pages, start=1):
-                text = page.extract_text()
-                if text:
-                    text_parts.append(f"--- PAGE {page_num} ---\n{text}\n")
+        try:
+            with open(pdf_path, 'rb') as f:
+                reader = PdfReader(f)
+                for page_num, page in enumerate(reader.pages, start=1):
+                    try:
+                        text = page.extract_text()
+                        if text:
+                            text_parts.append(f"--- PAGE {page_num} ---\n{text}\n")
+                    except Exception as e:
+                        print(f"Warning: Could not extract text from page {page_num}: {e}")
+            
+            # Explicit cleanup
+            del reader
+            gc.collect()
+            
+        except Exception as e:
+            print(f"Error reading PDF for text extraction: {e}")
+            return ""
         
         return "\n".join(text_parts)
     
@@ -302,6 +318,7 @@ class PDFProcessor:
     def extract_pages_by_type(self, pdf_path: Path, page_types: List[str]) -> Dict[str, List[int]]:
         """
         Identifikuje stránky podle typu (Consignment Note, MRN, atd.).
+        Používá PyPDF2 pro úsporu paměti.
         
         Args:
             pdf_path: Cesta k PDF souboru
@@ -310,27 +327,43 @@ class PDFProcessor:
         Returns:
             Slovník s typy stránek jako klíče a seznamy čísel stránek jako hodnoty
         """
+        import gc
+        from PyPDF2 import PdfReader
+        
         result = {page_type: [] for page_type in page_types}
         
-        with pdfplumber.open(pdf_path) as pdf:
-            for page_num, page in enumerate(pdf.pages, start=1):
-                text = page.extract_text() or ""
-                text_lower = text.lower()
+        try:
+            with open(pdf_path, 'rb') as f:
+                reader = PdfReader(f)
                 
-                # Identifikace Consignment Note
-                if "consignment note" in text_lower and "Consignment Note" in page_types:
-                    result["Consignment Note"].append(page_num)
-                
-                # Identifikace MRN stránky
-                if "mrn" in text_lower and "MRN" in page_types:
-                    # Kontrola přítomnosti dlouhého kódu (např. "25CZ3O000OO1DAGMB8")
-                    has_long_code = any(
-                        len(word) >= 15 and word.isalnum() 
-                        for word in text.split() 
-                        if word
-                    )
-                    if has_long_code:
-                        result["MRN"].append(page_num)
+                for page_num, page in enumerate(reader.pages, start=1):
+                    try:
+                        text = page.extract_text() or ""
+                        text_lower = text.lower()
+                        
+                        # Identifikace Consignment Note
+                        if "consignment note" in text_lower and "Consignment Note" in page_types:
+                            result["Consignment Note"].append(page_num)
+                        
+                        # Identifikace MRN stránky
+                        if "mrn" in text_lower and "MRN" in page_types:
+                            # Kontrola přítomnosti dlouhého kódu (např. "25CZ3O000OO1DAGMB8")
+                            has_long_code = any(
+                                len(word) >= 15 and word.isalnum() 
+                                for word in text.split() 
+                                if word
+                            )
+                            if has_long_code:
+                                result["MRN"].append(page_num)
+                    except Exception as e:
+                        print(f"Warning: Failed to process page {page_num}: {e}")
+            
+            # Explicit cleanup
+            del reader
+            gc.collect()
+            
+        except Exception as e:
+            print(f"Error processing PDF for page types: {e}")
         
         return result
     
