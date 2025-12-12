@@ -1,0 +1,53 @@
+.App {
+  min-height: 100vh;
+}
+
+.file-upload-area {
+  transition: all 0.3s ease;
+}
+
+.file-upload-area:hover:not(.disabled) {
+  border-color: #3498db !important;
+  background-color: #ebf5fb !important;
+}
+
+.file-upload-area.dragging {
+  border-color: #3498db !important;
+  background-color: #d6eaf8 !important;
+  transform: scale(1.02);
+}
+
+.file-upload-area.disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+table {
+  font-size: 14px;
+}
+
+table th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+@media (max-width: 768px) {
+  .container {
+    padding: 10px;
+  }
+  
+  .card {
+    padding: 16px;
+  }
+  
+  table {
+    font-size: 12px;
+  }
+  
+  table th,
+  table td {
+    padding: 8px;
+  }
+}
+
