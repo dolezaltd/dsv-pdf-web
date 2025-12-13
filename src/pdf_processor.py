@@ -189,30 +189,51 @@ class PDFProcessor:
                 content = content[:-3]
             
             content = content.strip()
-            
-            # Najdi JSON array v textu (může být obklopen textem)
-            json_match = re.search(r'\[.*\]', content, re.DOTALL)
-            if json_match:
-                content = json_match.group(0)
-            
-            # Parsování JSON
-            try:
-                data = json.loads(content)
-                # Pokud je to objekt, zkus najít pole uvnitř
-                if isinstance(data, dict):
-                    # Hledání pole v hodnotách
-                    for value in data.values():
+
+            # Parsování JSON:
+            # - nejdřív zkusíme přímý json.loads (nejrychlejší)
+            # - pokud selže, zkusíme z textu vytáhnout první validní JSON pomocí raw_decode
+            def _normalize_to_records(obj: Any) -> List[Dict[str, Any]]:
+                """Převede objekt na seznam záznamů (dictů), pokud to dává smysl."""
+                if obj is None:
+                    return []
+                if isinstance(obj, list):
+                    # Odfiltrujeme ne-dict položky, ale necháme je pokud by byly dict-like
+                    return [x for x in obj if isinstance(x, dict)]
+                if isinstance(obj, dict):
+                    # Hledání pole v hodnotách (častý tvar: {"data": [...]})
+                    for value in obj.values():
                         if isinstance(value, list):
-                            return value, usage_info
-                    # Pokud není pole, zkus to jako jeden objekt
-                    return [data], usage_info
-                if not isinstance(data, list):
-                    data = [data]
-                return data, usage_info
-            except json.JSONDecodeError as e:
-                print(f"Chyba při parsování JSON: {e}")
-                print(f"Obsah odpovědi: {content[:500]}...")
-                return [], usage_info
+                            return [x for x in value if isinstance(x, dict)]
+                    # Fallback: jeden záznam
+                    return [obj]
+                return []
+
+            try:
+                direct = json.loads(content)
+                records = _normalize_to_records(direct)
+                if records:
+                    return records, usage_info
+            except json.JSONDecodeError:
+                pass
+
+            decoder = json.JSONDecoder()
+            # Najdeme všechny možné starty JSON (array nebo objekt) a zkusíme raw_decode
+            # (Gemini někdy přidá text před/za JSON, případně více bloků).
+            candidates = [m.start() for m in re.finditer(r'[\[\{]', content)]
+            for start in candidates[:2000]:  # bezpečnostní limit
+                try:
+                    obj, _end = decoder.raw_decode(content, idx=start)
+                except json.JSONDecodeError:
+                    continue
+
+                records = _normalize_to_records(obj)
+                if records:
+                    return records, usage_info
+
+            print("Chyba: Nepodařilo se najít validní JSON v odpovědi modelu.")
+            print(f"Obsah odpovědi (začátek): {content[:500]}...")
+            return [], usage_info
                 
         except Exception as e:
             print(f"Chyba při komunikaci s AI modelem: {e}")
