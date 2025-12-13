@@ -238,6 +238,117 @@ class PDFProcessor:
         except Exception as e:
             print(f"Chyba při komunikaci s AI modelem: {e}")
             return [], None
+
+    def extract_data_without_ai(self, pdf_path: Path) -> List[Dict[str, Any]]:
+        """
+        Deterministická (regex/textová) extrakce pro případ, že AI selže.
+
+        Z dokumentu:
+        - najde Consignment Note stránky
+        - z nich vytáhne CN číslo a řádek "Shipment total: {N}colli {gross} {volume}"
+        - najde MRN stránky (stejná heuristika jako `extract_pages_by_type`)
+        - přiřadí MRN stránky ke CN podle pořadí v dokumentu
+        - z MRN stránek vytáhne 8místné HS kódy (ponechává duplicity)
+        """
+        from PyPDF2 import PdfReader
+
+        def _to_float_str(val: str) -> str:
+            # Převod "1478,0" -> "1478.0", "6,432" -> "6.432"
+            return val.strip().replace(" ", "").replace(",", ".")
+
+        def _find_cn_number(text: str) -> Optional[str]:
+            # Typicky se v textu objevuje "... CONSIGNMENT NOTE ... 40846302 ..."
+            m = re.search(r'consignment\s+note[^0-9]{0,50}(\d{6,12})', text, re.IGNORECASE)
+            if m:
+                return m.group(1)
+            # fallback: na CN stránkách je často nejvýraznější 8místné číslo
+            m2 = re.search(r'\b(\d{8})\b', text)
+            return m2.group(1) if m2 else None
+
+        def _parse_shipment_total(text: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+            # "Shipment total: 6colli 1478,0 6,432"
+            m = re.search(
+                r'shipment\s+total:\s*(\d+)\s*colli\s+([0-9][0-9\.,]*)\s+([0-9][0-9\.,]*)',
+                text,
+                re.IGNORECASE,
+            )
+            if not m:
+                return None, None, None
+            packages = m.group(1).strip()
+            gross = _to_float_str(m.group(2))
+            volume = _to_float_str(m.group(3))
+            return packages, gross, volume
+
+        def _is_mrn_page(text: str) -> bool:
+            tl = (text or "").lower()
+            if "mrn" not in tl:
+                return False
+            # Heuristika: stránka obsahuje alfanumerický kód délky >= 15 (MRN/ID)
+            for word in (text or "").split():
+                w = re.sub(r'[^A-Za-z0-9]', '', word)
+                if len(w) >= 15 and w.isalnum():
+                    return True
+            return False
+
+        def _extract_hs_codes(text: str) -> List[str]:
+            """
+            HS kódy: 8místné numerické řetězce typicky uvedené za českým identifikátorem
+            ve tvaru např. "QBP3123 CZ 85472000".
+            """
+            t = text or ""
+            # Preferujeme vzor s identifikátorem obsahujícím "BP" + čísla (např. QBP3123)
+            matches = re.findall(r'\b[0-9A-Z]*BP\d+\s+CZ\s+(\d{8})\b', t, flags=re.IGNORECASE)
+            # Na některých MRN stránkách je za stejným identifikátorem uvedena hmotnost apod.
+            # (např. "QBP3123 CZ 1478,002") – proto pokud nenajdeme přesný HS vzor,
+            # raději nic nevracíme, než abychom chytali falešné pozitivy.
+            return matches
+
+        extracted: List[Dict[str, Any]] = []
+
+        with open(pdf_path, "rb") as f:
+            reader = PdfReader(f)
+            page_texts: Dict[int, str] = {}
+            cn_pages: List[int] = []
+            mrn_pages: List[int] = []
+
+            for page_num, page in enumerate(reader.pages, start=1):
+                text = page.extract_text() or ""
+                page_texts[page_num] = text
+                tl = text.lower()
+                if "consignment note" in tl:
+                    cn_pages.append(page_num)
+                if _is_mrn_page(text):
+                    mrn_pages.append(page_num)
+
+        cn_pages = sorted(cn_pages)
+        mrn_pages = sorted(mrn_pages)
+
+        # Pro každou CN stránku vezmeme MRN stránky mezi ní a další CN (nebo koncem dokumentu)
+        for i, cn_page in enumerate(cn_pages):
+            next_cn = cn_pages[i + 1] if i + 1 < len(cn_pages) else float("inf")
+            assigned_mrn = [p for p in mrn_pages if cn_page < p < next_cn]
+
+            cn_text = page_texts.get(cn_page, "")
+            cn_number = _find_cn_number(cn_text)
+            packages, gross, volume = _parse_shipment_total(cn_text)
+
+            hs_codes: List[str] = []
+            for p in assigned_mrn:
+                hs_codes.extend(_extract_hs_codes(page_texts.get(p, "")))
+
+            record: Dict[str, Any] = {
+                "consignment_note": cn_number or "",
+                "gross_weight_kg": gross or "",
+                "packages": packages or "",
+                "volume_m3": volume or "",
+                "mrn_pages": assigned_mrn,
+                "hs_codes": hs_codes,
+            }
+            # Pokud se nepodařilo vytáhnout ani CN číslo, ani totals, tak záznam zahodíme
+            if record["consignment_note"] or record["gross_weight_kg"] or record["packages"] or record["volume_m3"]:
+                extracted.append(record)
+
+        return extracted
     
     def _call_google_gemini(self, system_prompt: str, pdf_path: Path) -> Tuple[str, Optional[Dict[str, Any]]]:
         """
@@ -477,6 +588,15 @@ class PDFProcessor:
         # Krok 1: Extrakce dat pomocí Google Gemini Vision API
         print("  → Extrahuji data pomocí Google Gemini Vision API (PDF)...")
         extracted_data, usage_info = self.extract_data_with_ai(pdf_path=pdf_path)
+
+        # Fallback: pokud AI nic nevrátí, zkusíme deterministickou extrakci z textu PDF
+        if not extracted_data:
+            print("  → AI nevrátila žádná data, zkouším fallback extrakci bez AI...")
+            try:
+                extracted_data = self.extract_data_without_ai(pdf_path=pdf_path)
+                print(f"  → Fallback extrakce: {len(extracted_data)} záznamů")
+            except Exception as e:
+                print(f"  → Fallback extrakce selhala: {e}")
         
         # Krok 3: Identifikace typů stránek (CN a MRN)
         print("  → Identifikuji MRN stránky...")
