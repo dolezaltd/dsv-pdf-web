@@ -170,6 +170,14 @@ class PDFProcessor:
         Returns:
             Tuple obsahující seznam slovníků s extrahovanými daty a informace o použití tokenů
         """
+        ai_diag: Dict[str, Any] = {
+            "ai_used": True,
+            "ai_method": None,  # file_api | base64 | unknown
+            "ai_response_chars": None,
+            "ai_json_parsed": False,
+            "ai_error": None,
+        }
+
         try:
             if not pdf_path:
                 raise ValueError("pdf_path je povinný parametr")
@@ -179,6 +187,9 @@ class PDFProcessor:
             
             # Vždy používáme Google Gemini Vision API s PDF souborem
             content, usage_info = self._call_google_gemini(system_prompt, pdf_path)
+            # _call_google_gemini může vrátit usage_info=None při chybě; doplníme diagnostiku
+            ai_diag["ai_method"] = "unknown"
+            ai_diag["ai_response_chars"] = len(content or "")
             
             # Odstranění markdown code bloků pokud jsou přítomny
             if content.startswith("```json"):
@@ -213,6 +224,10 @@ class PDFProcessor:
                 direct = json.loads(content)
                 records = _normalize_to_records(direct)
                 if records:
+                    ai_diag["ai_json_parsed"] = True
+                    if usage_info is None:
+                        usage_info = {}
+                    usage_info.setdefault("ai_diagnostics", ai_diag)
                     return records, usage_info
             except json.JSONDecodeError:
                 pass
@@ -229,15 +244,24 @@ class PDFProcessor:
 
                 records = _normalize_to_records(obj)
                 if records:
+                    ai_diag["ai_json_parsed"] = True
+                    if usage_info is None:
+                        usage_info = {}
+                    usage_info.setdefault("ai_diagnostics", ai_diag)
                     return records, usage_info
 
             print("Chyba: Nepodařilo se najít validní JSON v odpovědi modelu.")
             print(f"Obsah odpovědi (začátek): {content[:500]}...")
+            ai_diag["ai_error"] = "invalid_json_from_model"
+            if usage_info is None:
+                usage_info = {}
+            usage_info.setdefault("ai_diagnostics", ai_diag)
             return [], usage_info
                 
         except Exception as e:
             print(f"Chyba při komunikaci s AI modelem: {e}")
-            return [], None
+            ai_diag["ai_error"] = {"message": str(e), "type": type(e).__name__}
+            return [], {"ai_diagnostics": ai_diag}
 
     def extract_data_without_ai(self, pdf_path: Path) -> List[Dict[str, Any]]:
         """
