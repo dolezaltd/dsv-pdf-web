@@ -515,3 +515,4 @@ npm run dev
 - [ ] Aktualizovat port v `README.md`
 - [ ] Vytvořit `.env` v rootu projektu s `GOOGLE_API_KEY`
 - [ ] Otestovat end-to-end flow
+

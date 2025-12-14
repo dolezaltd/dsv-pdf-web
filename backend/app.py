@@ -1,16 +1,22 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel
 import shutil
 import os
 import sys
 import time
 import uuid
+import json
 from pathlib import Path
+from datetime import datetime, timedelta
 import logging
 import traceback
 import uvicorn
 from starlette.requests import Request
+import jwt
+import bcrypt
 
 # Přidání kořenového adresáře do sys.path, aby šlo importovat ze src
 # Předpokládáme, že backend/app.py se spouští z kořenového adresáře projektu
@@ -37,6 +43,101 @@ except ImportError as e:
 
 # Nastavení strukturovaného logování (JSONL do logs/ s rotací/retencí)
 setup_logging(service="dsv-pdf-web")
+
+# ============================================
+# AUTH CONFIGURATION
+# ============================================
+
+# JWT secret key - v produkci použijte silný náhodný klíč z env proměnných
+JWT_SECRET = os.environ.get("JWT_SECRET", "dsv-pdf-web-secret-key-change-in-production")
+JWT_ALGORITHM = "HS256"
+
+# Cesta k souboru s uživateli
+USERS_FILE = Path(__file__).parent / "users.json"
+
+# Security scheme pro JWT
+security = HTTPBearer(auto_error=False)
+
+
+class LoginRequest(BaseModel):
+    """Model pro přihlašovací požadavek."""
+    username: str
+    password: str
+    remember_me: bool = False
+
+
+class LoginResponse(BaseModel):
+    """Model pro odpověď po přihlášení."""
+    token: str
+    username: str
+    expires_at: str
+
+
+def load_user() -> dict | None:
+    """Načte uživatele z JSON souboru."""
+    if not USERS_FILE.exists():
+        return None
+    try:
+        with open(USERS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return None
+
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Ověří heslo proti bcrypt hashi."""
+    try:
+        return bcrypt.checkpw(
+            plain_password.encode('utf-8'),
+            hashed_password.encode('utf-8')
+        )
+    except Exception:
+        return False
+
+
+def create_jwt_token(username: str, remember_me: bool = False) -> tuple[str, datetime]:
+    """Vytvoří JWT token s příslušnou expirací."""
+    if remember_me:
+        expires_delta = timedelta(days=30)
+    else:
+        expires_delta = timedelta(hours=24)
+    
+    expires_at = datetime.utcnow() + expires_delta
+    
+    payload = {
+        "sub": username,
+        "exp": expires_at,
+        "iat": datetime.utcnow()
+    }
+    
+    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return token, expires_at
+
+
+def verify_jwt_token(token: str) -> dict | None:
+    """Ověří JWT token a vrátí payload."""
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return payload
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError:
+        return None
+
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
+    """Dependency pro získání aktuálního uživatele z JWT tokenu."""
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Nepřihlášen")
+    
+    token = credentials.credentials
+    payload = verify_jwt_token(token)
+    
+    if payload is None:
+        raise HTTPException(status_code=401, detail="Neplatný nebo expirovaný token")
+    
+    return payload.get("sub")
+
 
 app = FastAPI(title="DSV PDF Processor API")
 
@@ -119,8 +220,57 @@ except Exception as e:
 async def root():
     return {"message": "DSV PDF Processor API is running"}
 
+
+# ============================================
+# AUTH ENDPOINTS
+# ============================================
+
+@app.post("/auth/login", response_model=LoginResponse)
+async def login(request: LoginRequest):
+    """Endpoint pro přihlášení uživatele."""
+    user = load_user()
+    
+    if user is None:
+        logger.error("auth_failed: users.json not found or invalid")
+        raise HTTPException(status_code=500, detail="Chyba konfigurace serveru")
+    
+    # Ověření uživatelského jména
+    if request.username != user.get("username"):
+        logger.warning(f"auth_failed: invalid username '{request.username}'")
+        raise HTTPException(status_code=401, detail="Neplatné přihlašovací údaje")
+    
+    # Ověření hesla
+    if not verify_password(request.password, user.get("password_hash", "")):
+        logger.warning(f"auth_failed: invalid password for user '{request.username}'")
+        raise HTTPException(status_code=401, detail="Neplatné přihlašovací údaje")
+    
+    # Vytvoření JWT tokenu
+    token, expires_at = create_jwt_token(request.username, request.remember_me)
+    
+    logger.info(f"auth_success: user '{request.username}' logged in, remember_me={request.remember_me}")
+    
+    return LoginResponse(
+        token=token,
+        username=request.username,
+        expires_at=expires_at.isoformat()
+    )
+
+
+@app.get("/auth/verify")
+async def verify_token(current_user: str = Depends(get_current_user)):
+    """Endpoint pro ověření platnosti tokenu."""
+    return {"valid": True, "username": current_user}
+
+
+# ============================================
+# PROTECTED ENDPOINTS
+# ============================================
+
 @app.post("/process-pdf/")
-async def process_pdf(file: UploadFile = File(...)):
+async def process_pdf(
+    file: UploadFile = File(...),
+    current_user: str = Depends(get_current_user)
+):
     if not processor:
         raise HTTPException(status_code=500, detail="PDF Processor not initialized properly")
     
@@ -188,7 +338,11 @@ async def process_pdf(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Error processing PDF: {str(e)}")
 
 @app.get("/download/{download_id}/{file_type}")
-async def download_result(download_id: str, file_type: str):
+async def download_result(
+    download_id: str,
+    file_type: str,
+    current_user: str = Depends(get_current_user)
+):
     """
     Endpoint pro stažení výsledných souborů.
     file_type: 'csv' nebo 'mrn_pdf'

@@ -6,3 +6,4 @@ Zabalujeme je do balíčku kvůli jednoznačným importům (aby se nepletly s `b
 
 from .pdf_processor import PDFProcessor  # noqa: F401
 from .logger import ExtractionLogger  # noqa: F401
+

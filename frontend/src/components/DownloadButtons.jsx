@@ -1,14 +1,25 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { downloadFile } from '../services/api';
 
 const DownloadButtons = ({ jobId, outputFiles }) => {
+  const [downloading, setDownloading] = useState(null);
+  const [error, setError] = useState(null);
+
   if (!jobId || !outputFiles) {
     return null;
   }
 
-  const handleDownload = (fileType, filename) => {
+  const handleDownload = async (fileType, filename) => {
     if (filename) {
-      downloadFile(fileType, jobId, filename);
+      setDownloading(fileType);
+      setError(null);
+      try {
+        await downloadFile(fileType, jobId, filename);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setDownloading(null);
+      }
     }
   };
 
@@ -28,15 +39,21 @@ const DownloadButtons = ({ jobId, outputFiles }) => {
   return (
     <div className="card">
       <h2 style={{ marginBottom: '16px' }}>Stažení výsledků</h2>
+      {error && (
+        <div className="error" style={{ marginBottom: '12px' }}>
+          {error}
+        </div>
+      )}
       <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
         {csvFilename && (
           <button
             className="button button-secondary"
             onClick={() => handleDownload('csv', csvFilename)}
+            disabled={downloading !== null}
             style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
           >
             <span>📊</span>
-            <span>Stáhnout CSV</span>
+            <span>{downloading === 'csv' ? 'Stahování...' : 'Stáhnout CSV'}</span>
           </button>
         )}
         
@@ -44,10 +61,11 @@ const DownloadButtons = ({ jobId, outputFiles }) => {
           <button
             className="button button-secondary"
             onClick={() => handleDownload('mrn_pdf', pdfFilename)}
+            disabled={downloading !== null}
             style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
           >
             <span>📄</span>
-            <span>Stáhnout MRN PDF</span>
+            <span>{downloading === 'mrn_pdf' ? 'Stahování...' : 'Stáhnout MRN PDF'}</span>
           </button>
         )}
         

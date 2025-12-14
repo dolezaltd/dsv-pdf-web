@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { getToken, logout } from './auth';
 
 // Načtení URL backendu z environment proměnných nebo fallback na localhost
 // V Vite se environment proměnné musí jmenovat VITE_...
@@ -10,6 +11,34 @@ const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: 300000, // 5 minut pro zpracování velkých souborů
 });
+
+// Interceptor pro přidání Authorization headeru ke všem požadavkům
+api.interceptors.request.use(
+  (config) => {
+    const token = getToken();
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
+// Interceptor pro zachycení 401 odpovědí (neautorizovaný přístup)
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response && error.response.status === 401) {
+      // Token je neplatný nebo expirovaný
+      logout();
+      // Přesměrování na login (reload stránky)
+      window.location.reload();
+    }
+    return Promise.reject(error);
+  }
+);
 
 /**
  * Nahrání a zpracování PDF souboru
@@ -55,15 +84,35 @@ export const uploadAndProcessPDF = async (file, onProgress = null) => {
  * Stažení výsledného souboru
  * @param {string} fileType - Typ souboru ('csv' nebo 'mrn_pdf')
  * @param {string} jobId - ID pro stažení (získané z response.job_id)
- * @param {string} filename - Původní název souboru (nepoužívá se pro konstrukci URL, ale může být užitečný)
+ * @param {string} filename - Původní název souboru
  */
-export const downloadFile = (fileType, jobId, filename) => {
-  // Konstrukce URL pro přímé stažení
-  // Endpoint: /download/{download_id}/{file_type}
-  // V app.py je endpoint definován jako /download/{download_id}/{file_type}
-  // Zde používáme jobId jako download_id
-  const url = `${API_BASE_URL}/download/${jobId}/${fileType}`;
-  window.open(url, '_blank');
+export const downloadFile = async (fileType, jobId, filename) => {
+  try {
+    // Použijeme axios s auth headerem pro stažení
+    const response = await api.get(`/download/${jobId}/${fileType}`, {
+      responseType: 'blob'
+    });
+    
+    // Vytvoření URL pro blob a stažení
+    const blob = new Blob([response.data]);
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    
+    // Nastavení názvu souboru
+    const downloadFilename = fileType === 'csv' 
+      ? `${jobId}.csv` 
+      : `${jobId}_MRN.pdf`;
+    link.setAttribute('download', downloadFilename);
+    
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  } catch (error) {
+    console.error('Download error:', error);
+    throw new Error('Chyba při stahování souboru');
+  }
 };
 
 /**

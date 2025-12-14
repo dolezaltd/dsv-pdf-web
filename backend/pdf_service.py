@@ -94,3 +94,4 @@ class PDFService:
             return result
         finally:
             tmp_path.unlink(missing_ok=True)
+

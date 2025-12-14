@@ -1,6 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 const ResultsDisplay = ({ extractedData }) => {
+  const [copied, setCopied] = useState(false);
+
   if (!extractedData || extractedData.length === 0) {
     return (
       <div className="card">
@@ -18,6 +20,28 @@ const ResultsDisplay = ({ extractedData }) => {
   });
 
   const columns = Array.from(allKeys).sort();
+
+  const copyToClipboard = () => {
+    // Hlavička - názvy sloupců (formátované jako v tabulce)
+    const header = columns.map(key => 
+      key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
+    ).join('\t');
+    
+    // Řádky - hodnoty oddělené tabulátory
+    const rows = extractedData.map(record => 
+      columns.map(key => {
+        const value = record[key];
+        if (value === null || value === undefined) return '-';
+        if (Array.isArray(value)) return value.join(', ');
+        return String(value);
+      }).join('\t')
+    ).join('\n');
+    
+    // Kopírování do schránky
+    navigator.clipboard.writeText(`${header}\n${rows}`);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   return (
     <div className="card">
@@ -85,6 +109,11 @@ const ResultsDisplay = ({ extractedData }) => {
             ))}
           </tbody>
         </table>
+      </div>
+      <div style={{ marginTop: '16px', textAlign: 'right' }}>
+        <button className="button" onClick={copyToClipboard}>
+          {copied ? '✓ Zkopírováno!' : '📋 Kopírovat tabulku'}
+        </button>
       </div>
     </div>
   );

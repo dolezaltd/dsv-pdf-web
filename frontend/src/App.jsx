@@ -4,10 +4,17 @@ import ProcessingStatus from './components/ProcessingStatus';
 import ResultsDisplay from './components/ResultsDisplay';
 import Statistics from './components/Statistics';
 import DownloadButtons from './components/DownloadButtons';
+import Login from './components/Login';
 import { uploadAndProcessPDF, healthCheck } from './services/api';
+import { isAuthenticated, logout, getUser } from './services/auth';
 import './App.css';
 
 function App() {
+  // Auth state
+  const [isLoggedIn, setIsLoggedIn] = useState(() => isAuthenticated());
+  const [currentUser, setCurrentUser] = useState(() => getUser());
+
+  // App state
   const [queue, setQueue] = useState([]);
   const [processedFiles, setProcessedFiles] = useState([]);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -18,6 +25,27 @@ function App() {
   const [selectedResultIndex, setSelectedResultIndex] = useState(0);
   
   const [backendStatus, setBackendStatus] = useState(null);
+
+  // Handler pro úspěšné přihlášení
+  const handleLoginSuccess = (result) => {
+    setIsLoggedIn(true);
+    setCurrentUser({ username: result.username });
+  };
+
+  // Handler pro odhlášení
+  const handleLogout = () => {
+    logout();
+    setIsLoggedIn(false);
+    setCurrentUser(null);
+    // Reset app state
+    setQueue([]);
+    setProcessedFiles([]);
+    setIsProcessing(false);
+    setCurrentFileIndex(0);
+    setProgress(0);
+    setMessage('');
+    setSelectedResultIndex(0);
+  };
 
   // Kontrola stavu backendu při načtení
   useEffect(() => {
@@ -111,10 +139,48 @@ function App() {
 
   const activeResult = processedFiles[selectedResultIndex];
 
+  // Zobrazení login obrazovky, pokud uživatel není přihlášen
+  if (!isLoggedIn) {
+    return <Login onLoginSuccess={handleLoginSuccess} />;
+  }
+
   return (
     <div className="App">
       <div className="header">
-        <h1>PDF Extractor - Webová aplikace</h1>
+        <div style={{ 
+          display: 'flex', 
+          justifyContent: 'space-between', 
+          alignItems: 'center',
+          maxWidth: '1200px',
+          margin: '0 auto',
+          padding: '0 20px'
+        }}>
+          <h1 style={{ margin: 0 }}>PDF Extractor - Webová aplikace</h1>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+            {currentUser && (
+              <span style={{ fontSize: '14px', opacity: 0.9 }}>
+                {currentUser.username}
+              </span>
+            )}
+            <button
+              onClick={handleLogout}
+              style={{
+                background: 'rgba(255,255,255,0.2)',
+                border: '1px solid rgba(255,255,255,0.3)',
+                color: 'white',
+                padding: '8px 16px',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontSize: '14px',
+                transition: 'background 0.2s'
+              }}
+              onMouseOver={(e) => e.target.style.background = 'rgba(255,255,255,0.3)'}
+              onMouseOut={(e) => e.target.style.background = 'rgba(255,255,255,0.2)'}
+            >
+              Odhlásit
+            </button>
+          </div>
+        </div>
         {backendStatus && (
           <div style={{ 
             textAlign: 'center', 

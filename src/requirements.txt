@@ -7,3 +7,7 @@ python-multipart>=0.0.7
 python-dotenv>=1.0.0
 python-json-logger>=2.0.7
 
+# Authentication
+PyJWT>=2.8.0
+bcrypt>=4.1.0
+
